@@ -10,8 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
-    ENDPOINT_BLINK_START,
-    ENDPOINT_BLINK_STOP,
+    ENDPOINT_LED,
     ENDPOINT_PAUSE,
     ENDPOINT_REBOOT,
     ENDPOINT_RESTART,
@@ -53,16 +52,10 @@ BUTTONS: tuple[WhatsminerButtonDescription, ...] = (
         endpoint=ENDPOINT_RESUME,
     ),
     WhatsminerButtonDescription(
-        key="blink_start",
-        name="Start Blink",
+        key="led_on",
+        name="LED On",
         icon="mdi:led-on",
-        endpoint=ENDPOINT_BLINK_START,
-    ),
-    WhatsminerButtonDescription(
-        key="blink_stop",
-        name="Stop Blink",
-        icon="mdi:led-off",
-        endpoint=ENDPOINT_BLINK_STOP,
+        endpoint=ENDPOINT_LED,
     ),
 )
 
