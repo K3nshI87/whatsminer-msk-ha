@@ -11,7 +11,6 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONF_HOST,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfFrequency,
@@ -31,24 +30,37 @@ from .coordinator import WhatsminerCoordinator
 @dataclass(frozen=True)
 class WhatsminerSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict], Any] | None = None
+    unit_fn: Callable[[dict], str | None] | None = None
+
+
+def _psu(data: dict) -> dict:
+    return data.get("get.device.info", {}).get("msg", {}).get("power", {})
+
+
+def _psu_fan(data: dict) -> float | None:
+    psu_fan = _psu(data).get("fanspeed")
+    if psu_fan is not None and psu_fan > 0:
+        return psu_fan
+    fans = [f for f in data.get("fan_speed", []) if f > 0]
+    return round(sum(fans) / len(fans)) if fans else None
 
 
 SENSORS: tuple[WhatsminerSensorDescription, ...] = (
     WhatsminerSensorDescription(
         key="real_hash_rate",
-        name="Real Hashrate",
-        native_unit_of_measurement="TH/s",
+        name="Hashrate",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:pickaxe",
         value_fn=lambda d: d.get("real_hash_rate"),
+        unit_fn=lambda d: d.get("rate_unit", "TH/s"),
     ),
     WhatsminerSensorDescription(
         key="avg_hash_rate",
-        name="Average Hashrate",
-        native_unit_of_measurement="TH/s",
+        name="Avg Hashrate",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:pickaxe",
         value_fn=lambda d: d.get("avg_hash_rate"),
+        unit_fn=lambda d: d.get("rate_unit", "TH/s"),
     ),
     WhatsminerSensorDescription(
         key="power",
@@ -80,16 +92,27 @@ SENSORS: tuple[WhatsminerSensorDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: float(d["water_temp"]) if d.get("water_temp") and d["water_temp"] != "0.00" else None,
+        value_fn=lambda d: (
+            float(d["water_temp"])
+            if d.get("water_temp") and float(d.get("water_temp", 0)) > 0
+            else None
+        ),
     ),
     WhatsminerSensorDescription(
-        key="running_time",
-        name="Uptime",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        icon="mdi:clock-outline",
-        value_fn=lambda d: d.get("running_time"),
+        key="psu_temp",
+        name="PSU Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: _psu(d).get("temp0"),
+    ),
+    WhatsminerSensorDescription(
+        key="psu_fan",
+        name="PSU Fan Speed",
+        native_unit_of_measurement="RPM",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:fan",
+        value_fn=_psu_fan,
     ),
     WhatsminerSensorDescription(
         key="psu_vin",
@@ -97,7 +120,7 @@ SENSORS: tuple[WhatsminerSensorDescription, ...] = (
         device_class=SensorDeviceClass.VOLTAGE,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.get("get.device.info", {}).get("msg", {}).get("power", {}).get("vin"),
+        value_fn=lambda d: _psu(d).get("vin"),
     ),
     WhatsminerSensorDescription(
         key="psu_iin",
@@ -105,29 +128,54 @@ SENSORS: tuple[WhatsminerSensorDescription, ...] = (
         device_class=SensorDeviceClass.CURRENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.get("get.device.info", {}).get("msg", {}).get("power", {}).get("iin"),
+        value_fn=lambda d: _psu(d).get("iin"),
     ),
     WhatsminerSensorDescription(
-        key="psu_vout",
-        name="PSU Voltage Out",
-        device_class=SensorDeviceClass.VOLTAGE,
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.get("get.device.info", {}).get("msg", {}).get("power", {}).get("vout"),
+        key="uptime",
+        name="Uptime",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:clock-outline",
+        value_fn=lambda d: round(d["running_time"] / 3600, 2) if d.get("running_time") else None,
+    ),
+    WhatsminerSensorDescription(
+        key="miner_status",
+        name="Status",
+        icon="mdi:information-outline",
+        value_fn=lambda d: d.get("miner_status"),
+    ),
+    WhatsminerSensorDescription(
+        key="active_pool",
+        name="Active Pool",
+        icon="mdi:pool",
+        value_fn=lambda d: next(
+            (p["url"] for p in d.get("pools", []) if p.get("url")), None
+        ),
     ),
 )
 
 
 def _chain_sensors(chain_index: int) -> tuple[WhatsminerSensorDescription, ...]:
     i = chain_index
+
+    def _cv(key: str) -> Callable[[dict], Any]:
+        def fn(d: dict, idx: int = i) -> Any:
+            for chain in d.get("chain_info", []):
+                if chain.get("id") == idx:
+                    val = chain.get(key)
+                    return round(val, 3) if isinstance(val, float) else val
+            return None
+        return fn
+
     return (
         WhatsminerSensorDescription(
             key=f"chain_{i}_hashrate",
             name=f"Chain {i} Hashrate",
-            native_unit_of_measurement="TH/s",
             state_class=SensorStateClass.MEASUREMENT,
             icon="mdi:pickaxe",
-            value_fn=lambda d, idx=i: _chain_val(d, idx, "hashrate"),
+            value_fn=_cv("hashrate"),
+            unit_fn=lambda d: d.get("rate_unit", "TH/s"),
         ),
         WhatsminerSensorDescription(
             key=f"chain_{i}_freq",
@@ -135,7 +183,7 @@ def _chain_sensors(chain_index: int) -> tuple[WhatsminerSensorDescription, ...]:
             native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ,
             state_class=SensorStateClass.MEASUREMENT,
             icon="mdi:sine-wave",
-            value_fn=lambda d, idx=i: _chain_val(d, idx, "freq"),
+            value_fn=_cv("freq"),
         ),
         WhatsminerSensorDescription(
             key=f"chain_{i}_temp_inlet",
@@ -143,7 +191,7 @@ def _chain_sensors(chain_index: int) -> tuple[WhatsminerSensorDescription, ...]:
             device_class=SensorDeviceClass.TEMPERATURE,
             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
             state_class=SensorStateClass.MEASUREMENT,
-            value_fn=lambda d, idx=i: _chain_val(d, idx, "temp_inlet"),
+            value_fn=_cv("temp_inlet"),
         ),
         WhatsminerSensorDescription(
             key=f"chain_{i}_temp_outlet",
@@ -151,20 +199,9 @@ def _chain_sensors(chain_index: int) -> tuple[WhatsminerSensorDescription, ...]:
             device_class=SensorDeviceClass.TEMPERATURE,
             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
             state_class=SensorStateClass.MEASUREMENT,
-            value_fn=lambda d, idx=i: _chain_val(d, idx, "temp_outlet"),
+            value_fn=_cv("temp_outlet"),
         ),
     )
-
-
-def _chain_val(data: dict, chain_index: int, key: str) -> Any:
-    chains = data.get("chain_info", [])
-    for chain in chains:
-        if chain.get("id") == chain_index:
-            val = chain.get(key)
-            if val is not None and isinstance(val, float):
-                return round(val, 3)
-            return val
-    return None
 
 
 async def async_setup_entry(
@@ -172,36 +209,38 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: WhatsminerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    data = coordinator.data
-
-    chain_num = data.get("chain_num", 3)
-    all_sensors = list(SENSORS)
-    for i in range(chain_num):
-        all_sensors.extend(_chain_sensors(i))
-
-    async_add_entities(
-        WhatsminerSensor(coordinator, entry, desc) for desc in all_sensors
-    )
+    coordinators: dict[str, WhatsminerCoordinator] = hass.data[DOMAIN][entry.entry_id]
+    entities = []
+    for coordinator in coordinators.values():
+        chain_num = (coordinator.data or {}).get("chain_num", 3)
+        descs = list(SENSORS)
+        for i in range(chain_num):
+            descs.extend(_chain_sensors(i))
+        for desc in descs:
+            entities.append(WhatsminerSensor(coordinator, entry, desc))
+    async_add_entities(entities)
 
 
 class WhatsminerSensor(CoordinatorEntity[WhatsminerCoordinator], SensorEntity):
     entity_description: WhatsminerSensorDescription
 
-    def __init__(
-        self,
-        coordinator: WhatsminerCoordinator,
-        entry: ConfigEntry,
-        description: WhatsminerSensorDescription,
-    ) -> None:
+    def __init__(self, coordinator: WhatsminerCoordinator, entry: ConfigEntry, description: WhatsminerSensorDescription) -> None:
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_unique_id = f"{entry.entry_id}_{coordinator.api.host}_{description.key}"
         self._attr_device_info = _device_info(coordinator, entry)
+        if description.unit_fn is None and description.native_unit_of_measurement:
+            self._attr_native_unit_of_measurement = description.native_unit_of_measurement
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        if self.entity_description.unit_fn and self.coordinator.data:
+            return self.entity_description.unit_fn(self.coordinator.data)
+        return self.entity_description.native_unit_of_measurement
 
     @property
     def native_value(self) -> Any:
-        if self.entity_description.value_fn is None:
+        if not self.coordinator.data or self.entity_description.value_fn is None:
             return None
         try:
             return self.entity_description.value_fn(self.coordinator.data)
@@ -212,10 +251,10 @@ class WhatsminerSensor(CoordinatorEntity[WhatsminerCoordinator], SensorEntity):
 def _device_info(coordinator: WhatsminerCoordinator, entry: ConfigEntry) -> DeviceInfo:
     data = coordinator.data or {}
     return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name=data.get("miner_type", "WhatsMiner"),
-        manufacturer=data.get("miner_factory", "WhatsMiner").capitalize(),
-        model=data.get("miner_type", "Unknown"),
+        identifiers={(DOMAIN, f"{entry.entry_id}_{coordinator.api.host}")},
+        name=f"{data.get('miner_type', 'WhatsMiner')} ({coordinator.api.host})",
+        manufacturer=(data.get("miner_factory") or "WhatsMiner").capitalize(),
+        model=data.get("miner_type"),
         sw_version=data.get("version"),
-        configuration_url=f"http://{coordinator.host}",
+        configuration_url=f"http://{coordinator.api.host}",
     )

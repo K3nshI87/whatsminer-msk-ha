@@ -1,28 +1,34 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
-import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 
-from .const import API_PATH, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL, DOMAIN, ENDPOINT_INFO
+from .api import CannotConnect, InvalidAuth, discover_miners
+from .const import (
+    CONF_IP_RANGE,
+    CONF_MINERS,
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL,
+    CONF_USERNAME,
+    DEFAULT_PASSWORD,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_USERNAME,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-
-async def _test_connection(host: str, port: int) -> dict | None:
-    url = f"http://{host}:{port}{API_PATH}{ENDPOINT_INFO}"
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                return await resp.json(content_type=None)
-    except Exception:
-        return None
+STEP_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_IP_RANGE, default="192.168.1.0/24"): str,
+        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+        vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): str,
+        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): int,
+    }
+)
 
 
 class WhatsminerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -32,31 +38,35 @@ class WhatsminerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            host = user_input[CONF_HOST].strip()
-            port = user_input.get(CONF_PORT, DEFAULT_PORT)
+            ip_range = user_input[CONF_IP_RANGE].strip()
+            username = user_input[CONF_USERNAME]
+            password = user_input[CONF_PASSWORD]
 
-            await self.async_set_unique_id(f"{host}:{port}")
-            self._abort_if_unique_id_configured()
-
-            data = await _test_connection(host, port)
-            if data is None:
+            try:
+                miners = await discover_miners(ip_range, username, password)
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except CannotConnect:
                 errors["base"] = "cannot_connect"
             else:
-                return self.async_create_entry(
-                    title=f"{data.get('miner_type', 'WhatsMiner')} ({host})",
-                    data={
-                        CONF_HOST: host,
-                        CONF_PORT: port,
-                        CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                    },
-                )
+                if not miners:
+                    errors["base"] = "no_miners_found"
+                else:
+                    await self.async_set_unique_id(f"whatsminer_{ip_range}")
+                    self._abort_if_unique_id_configured()
+                    return self.async_create_entry(
+                        title=f"WhatsMiner ({', '.join(miners)})",
+                        data={
+                            CONF_IP_RANGE: ip_range,
+                            CONF_USERNAME: username,
+                            CONF_PASSWORD: password,
+                            CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                            CONF_MINERS: miners,
+                        },
+                    )
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_HOST): str,
-                vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
-                vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): int,
-            }
+        return self.async_show_form(
+            step_id="user",
+            data_schema=STEP_SCHEMA,
+            errors=errors,
         )
-
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
