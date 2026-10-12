@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add WhatsMiner MSK",
+        "description": "Enter the IP address of your miner.",
+        "data": {
+          "host": "IP Address",
+          "port": "Port",
+          "scan_interval": "Update interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the miner. Check the IP address and that the miner is online."
+    },
+    "abort": {
+      "already_configured": "This miner is already configured."
+    }
+  }
+}

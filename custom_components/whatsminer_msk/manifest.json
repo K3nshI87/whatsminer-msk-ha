@@ -1,0 +1,10 @@
+{
+  "domain": "whatsminer_msk",
+  "name": "WhatsMiner MSK",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/",
+  "requirements": [],
+  "codeowners": [],
+  "iot_class": "local_polling"
+}
